@@ -4,6 +4,7 @@ Malayalam-first live voice assistant for EduConnect Pro, with English and Mangli
 
 ## Current implementation
 - GPT-Live full-duplex voice over a server-side WebSocket bridge
+- Live multilingual transcription with `gpt-live-transcribe`
 - Browser microphone capture and PCM16 24 kHz streaming
 - Spoken responses streamed back to the browser
 - Malayalam, Manglish and English speaking instructions
