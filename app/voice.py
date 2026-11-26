@@ -266,6 +266,10 @@ async def mithu_voice_socket(websocket: WebSocket):
                 exc = task.exception()
                 if exc and not isinstance(exc, (WebSocketDisconnect, asyncio.CancelledError)):
                     log.warning("Voice bridge ended user_id=%s error_type=%s", user.user_id, type(exc).__name__)
+            try:
+                await _send_json(upstream, {"type": "session.close"})
+            except Exception:
+                pass
     except asyncio.TimeoutError:
         try:
             await websocket.send_json({"type": "mithu.error", "message": "Mithu voice session timed out while connecting."})
