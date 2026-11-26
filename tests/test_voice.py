@@ -50,13 +50,13 @@ def test_student_voice_result_removes_private_fields():
         "payments": [{"amount": 50000}],
         "fees_plan": {"year_1": 90000},
     })
-    assert result == {
+    assert result == {"items": [{
         "id": "s1",
         "name": "Student One",
         "course": "BSc Nursing",
         "college": "Example College",
         "status": "enrolled",
-    }
+    }], "truncated": False}
 
 
 def test_college_voice_result_never_exposes_revenue_fields():
@@ -66,8 +66,8 @@ def test_college_voice_result_never_exposes_revenue_fields():
         "courses": ["BSc Nursing"],
         "sc_rates": {"BSc Nursing": 25000},
     }])
-    assert result == [{
+    assert result == {"items": [{
         "name": "Example College",
         "place": "Bengaluru",
         "courses": ["BSc Nursing"],
-    }]
+    }], "truncated": False}
