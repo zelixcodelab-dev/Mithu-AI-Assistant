@@ -97,6 +97,14 @@ def _session_configuration(cfg) -> dict[str, Any]:
         "instructions": VOICE_SYSTEM_PROMPT,
         "audio": {
             "format": {"type": "audio/pcm", "rate": 24000},
+            "input": {
+                "transcription": {"model": "gpt-4o-mini-transcribe"},
+                "turn_detection": {
+                    "type": "server_vad",
+                    "create_response": True,
+                    "interrupt_response": True,
+                },
+            },
             "output": {"voice": cfg.mithu_live_voice},
         },
         "delegation": {
