@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
-
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,14 +14,13 @@ client = ElevenLabsAdminClient()
 
 
 def require_admin(user: UserContext = Depends(require_user_context)) -> UserContext:
-    # Platform-level role is required to administer global Mithu configuration.
     if user.scope != "platform" or user.role not in {"platform_owner", "platform_admin"}:
         raise HTTPException(status_code=403, detail="Command Center administrator access required")
     return user
 
 
 def map_elevenlabs_error(exc: ElevenLabsAdminError):
-    raise HTTPException(status_code=502, detail="ElevenLabs administration request failed") from exc
+    raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def db_required():
@@ -74,10 +72,6 @@ class PermissionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     context: str = Field(pattern="^(personal|business)$")
     permissions: list[PermissionInput] = Field(max_length=30)
-
-
-def agent_id_from_config() -> str:
-    return client.agent_id
 
 
 @router.get("/overview")
@@ -139,28 +133,40 @@ async def get_agent(_: UserContext = Depends(require_admin)):
 async def patch_agent(body: AgentPatch, _: UserContext = Depends(require_admin)):
     values = body.model_dump(exclude_none=True)
     try:
+        metadata = {}
         if "name" in values:
-            await client.update_metadata(name=values.pop("name"))
-        if any(k in values for k in ("first_message", "language", "allow_interruptions", "hinglish_mode")):
-            await client.update_behaviour(
-                first_message=values.pop("first_message", None),
-                language=values.pop("language", None),
-                disable_first_message_interruptions=None if "allow_interruptions" not in values else not values.pop("allow_interruptions"),
-                hinglish_mode=values.pop("hinglish_mode", None),
-            )
-        prompt_fields = {k: values.pop(k) for k in list(values) if k in {"llm", "prompt", "temperature", "max_tokens"}}
-        if prompt_fields:
-            await client.update_prompt(**prompt_fields)
-        conversation_fields = {k: values.pop(k) for k in list(values) if k in {"monitoring_enabled", "max_duration_seconds"}}
-        if conversation_fields:
-            await client.update_conversation(**conversation_fields)
-        privacy_fields = {k: values.pop(k) for k in list(values) if k in {"record_voice", "retention_days"}}
-        operation_fields = {}
+            metadata["name"] = values.pop("name")
+        behaviour = {}
+        for key in ("first_message", "language", "hinglish_mode", "allow_interruptions"):
+            if key in values:
+                value = values.pop(key)
+                behaviour["disable_first_message_interruptions" if key == "allow_interruptions" else key] = (not value if key == "allow_interruptions" else value)
+        prompt = {}
+        for key in ("llm", "prompt", "temperature", "max_tokens"):
+            if key in values:
+                prompt[key] = values.pop(key)
+        conversation = {}
+        for key in ("monitoring_enabled", "max_duration_seconds"):
+            if key in values:
+                conversation[key] = values.pop(key)
+        privacy = {}
+        for key in ("record_voice", "retention_days"):
+            if key in values:
+                privacy[key] = values.pop(key)
+        operations = {}
         if "require_auth" in values:
-            operation_fields["auth"] = {"enable_auth": values.pop("require_auth")}
-        if privacy_fields or operation_fields:
-            await client.update_operations(privacy=privacy_fields or None, **operation_fields)
-        return {"saved": True, "note": "ElevenLabs changes publish a new version or draft according to the workspace API."}
+            operations["auth"] = {"enable_auth": values.pop("require_auth")}
+        if metadata:
+            await client.update_metadata(**metadata)
+        if behaviour:
+            await client.update_behaviour(**behaviour)
+        if prompt:
+            await client.update_prompt(**prompt)
+        if conversation:
+            await client.update_conversation(**conversation)
+        if privacy or operations:
+            await client.update_operations(privacy=privacy or None, **operations)
+        return {"saved": True, "note": "ElevenLabs settings are versioned. Review the resulting version before deployment."}
     except ElevenLabsAdminError as exc:
         map_elevenlabs_error(exc)
 
@@ -221,12 +227,13 @@ async def conversation_detail(conversation_id: str, _: UserContext = Depends(req
     try:
         c = await client.get_conversation(conversation_id)
         meta = c.get("metadata") or {}
+        analysis = c.get("analysis") or {}
         return {
             "conversation_id": conversation_id,
-            "title": c.get("analysis", {}).get("call_summary_title"),
+            "title": analysis.get("call_summary_title"),
             "language": meta.get("main_language"),
             "duration_secs": meta.get("call_duration_secs", 0),
-            "call_successful": c.get("analysis", {}).get("call_successful"),
+            "call_successful": analysis.get("call_successful"),
             "transcript": c.get("transcript", []),
         }
     except ElevenLabsAdminError as exc:
@@ -240,7 +247,7 @@ async def usage(_: UserContext = Depends(require_admin)):
         rows = result.get("conversations", [])
         return {
             "account_balance": None,
-            "account_balance_note": "The account-level credit balance is not available in the connected agent API.",
+            "account_balance_note": "The connected agent API does not expose remaining workspace credits.",
             "conversation_cost_usd": sum(float(c.get("cost_fiat") or 0) for c in rows),
             "conversation_count": len(rows),
         }
@@ -249,10 +256,14 @@ async def usage(_: UserContext = Depends(require_admin)):
 
 
 @router.get("/memories")
-async def memories(context: str = Query(pattern="^(personal|business)$"), user: UserContext = Depends(require_admin)):
+async def memories(context: str = Query(pattern="^(personal|business)$"), _: UserContext = Depends(require_admin)):
     db_required()
     cursor = store.db.memories.find({"context": context}).sort("updated_at", -1).limit(300)
-    return {"memories": [{**m, "id": str(m.pop("_id"))} async for m in cursor]}
+    rows = []
+    async for memory in cursor:
+        memory["id"] = str(memory.pop("_id"))
+        rows.append(memory)
+    return {"memories": rows}
 
 
 @router.post("/memories", status_code=201)
@@ -267,10 +278,12 @@ async def add_memory(body: MemoryInput, user: UserContext = Depends(require_admi
 @router.patch("/memories/{memory_id}")
 async def update_memory(memory_id: str, body: MemoryInput, _: UserContext = Depends(require_admin)):
     db_required()
-    from bson import ObjectId
     if not ObjectId.is_valid(memory_id):
         raise HTTPException(status_code=404, detail="Memory not found")
-    result = await store.db.memories.update_one({"_id": ObjectId(memory_id)}, {"$set": {**body.model_dump(), "updated_at": datetime.now(timezone.utc)}})
+    result = await store.db.memories.update_one(
+        {"_id": ObjectId(memory_id)},
+        {"$set": {**body.model_dump(), "updated_at": datetime.now(timezone.utc)}},
+    )
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"id": memory_id, **body.model_dump()}
@@ -279,7 +292,6 @@ async def update_memory(memory_id: str, body: MemoryInput, _: UserContext = Depe
 @router.delete("/memories/{memory_id}", status_code=204)
 async def delete_memory(memory_id: str, _: UserContext = Depends(require_admin)):
     db_required()
-    from bson import ObjectId
     if not ObjectId.is_valid(memory_id):
         raise HTTPException(status_code=404, detail="Memory not found")
     result = await store.db.memories.delete_one({"_id": ObjectId(memory_id)})
@@ -292,8 +304,6 @@ async def delete_memory(memory_id: str, _: UserContext = Depends(require_admin))
 async def get_permissions(_: UserContext = Depends(require_admin)):
     db_required()
     rows = await store.db.permission_policies.find({}).to_list(100)
-    for row in rows:
-        row["id"] = str(row.pop("_id"))
     result = {"personal": [], "business": []}
     for row in rows:
         result[row["context"]] = row.get("permissions", [])
@@ -314,6 +324,4 @@ async def put_permissions(body: PermissionUpdate, user: UserContext = Depends(re
 
 @router.post("/monitoring/session")
 async def monitoring_session(_: UserContext = Depends(require_admin)):
-    # A signed URL is deliberately not fabricated. A token-exchange endpoint must
-    # be added to ElevenLabsAdminClient when the workspace grants that API scope.
     raise HTTPException(status_code=501, detail="Signed live-monitor session creation is not enabled in this connector.")
