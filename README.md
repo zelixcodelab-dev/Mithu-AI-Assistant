@@ -1,54 +1,71 @@
-# Mithu AI — EduConnect Pro assistant
+# Mithu AI — EduConnect Pro voice assistant
 
-Malayalam-first conversational assistant for EduConnect Pro.
+Malayalam-first live voice assistant for EduConnect Pro, with English and Manglish support.
 
-## Scope
-- Malayalam, Manglish and English text chat
-- OpenAI Responses API orchestration
-- Allow-listed read-only EduConnect gateway tools (disabled until configured)
-- Separate MongoDB database for Mithu metadata
-- Voice adapter boundary prepared for a later speech release
+## Current implementation
+- GPT-Live full-duplex voice over a server-side WebSocket bridge
+- Live multilingual transcription with `gpt-live-transcribe`
+- Browser microphone capture and PCM16 24 kHz streaming
+- Spoken responses streamed back to the browser
+- Malayalam, Manglish and English speaking instructions
+- Input and output transcript events
+- Responses delegation for registered read-only EduConnect tools
+- Short-lived Ed25519 identity assertion from the existing EduConnect API
+- Separate Mithu metadata database; no direct EduConnect DB access
 - Docker-ready FastAPI service
 
+## Architecture
+1. React browser requests a short-lived voice identity assertion from EduConnect using its existing authenticated Axios client.
+2. The browser opens a WebSocket to Mithu and sends the assertion as a WebSocket subprotocol, not as a URL query parameter.
+3. Mithu verifies the Ed25519 signature, issuer, audience, expiry, role and tenant.
+4. Mithu opens a trusted server-to-server WebSocket to `wss://api.openai.com/v1/live/sessions`. The OpenAI API key stays on the Mithu server.
+5. Mithu bridges raw PCM16 audio and transcript events. Function calls from Responses delegation are executed by the server-side allow-listed read-only tools.
+
 ## Security
-1. No direct EduConnect MongoDB access. Only `MITHU_MONGODB_URI` is used, with database name `educonnect_mithu`.
-2. No reuse of EduConnect's `JWT_SECRET`. Mithu verifies short-lived Ed25519 identity assertions using `IDENTITY_PUBLIC_KEY_PEM`.
-3. Browser-supplied role, tenant, office, permissions and student IDs are never authorization.
-4. EduConnect integration is disabled by default. Only GET tool paths under `/internal/ai/` are accepted.
-5. The EduConnect API must re-check identity, tenant, role, office and record visibility for every tool call.
-6. No access tokens, raw student documents, full phone numbers, Aadhaar, fees or internal notes in logs.
-7. Tests use in-memory fakes; they do not connect to EduConnect production data.
+- Never point `MITHU_MONGODB_URI` at EduConnect databases.
+- Never give Mithu the EduConnect `MONGO_URL` or JWT signing secret.
+- EduConnect issues the identity assertion only after its existing `get_current_user` authentication dependency has resolved the caller.
+- Mithu accepts only EdDSA assertions with the expected issuer/audience and a maximum 120-second lifetime.
+- Browser messages are allow-listed; no browser-supplied role or tenant becomes authorization.
+- Only read-only AI tools are registered. Tool access is disabled unless `EDUCONNECT_API_ENABLED=true`.
+- Tool calls must still be checked by the EduConnect API for the user's current tenant/office/student permissions.
+- Raw audio and transcripts are not persisted by this initial voice service. Session metadata only is stored if the separate Mithu database is configured.
 
 ## Local run
 ```bash
 cp .env.example .env
-# Set OPENAI_API_KEY server-side. Add a separate test Mongo URI only if persistence is needed.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8100
 ```
 
-Health check: `GET /health`.
+Health: `GET /health`. Voice WebSocket: `/api/v1/voice/ws`.
 
-## Required EduConnect-side integration
-The EduConnect backend must authenticate its existing JWT using its existing `get_current_user` dependency, derive user and tenant context from server-side state, then issue a short-lived Ed25519 assertion with issuer, audience, subject, tenant, scope, role, office, permissions, issued-at, expiry and token ID. Use a 60–120 second validity window. The backend must proxy requests and apply the existing visibility logic.
+## Environment
+Set in the separate Mithu service:
+- `OPENAI_API_KEY`
+- `MITHU_LIVE_MODEL=gpt-live-1.1`
+- `MITHU_RESPONSES_MODEL=gpt-6-luna`
+- `MITHU_LIVE_VOICE=marin`
+- `IDENTITY_PUBLIC_KEY_PEM` (public half of EduConnect's Ed25519 key pair)
+- `MITHU_MONGODB_URI` (only if voice session metadata should be persisted)
+- `CORS_ORIGINS` for the approved EduConnect browser origins
 
-No direct access to EduConnect's tenant databases, platform database or JWT signing secret should ever be granted to Mithu.
+In EduConnect backend:
+- `MITHU_IDENTITY_PRIVATE_KEY_PEM` (private half of the Ed25519 key pair)
+- `MITHU_VOICE_ENABLED=true`
+- `MITHU_VOICE_SERVICE_URL` (Mithu service HTTPS base URL)
+- `MITHU_VOICE_WS_URL` (Mithu service WSS endpoint, e.g. `wss://mithu.example.com/api/v1/voice/ws`)
 
-## Current app-specific facts
-EduConnect Pro currently uses:
-- React (Create React App/Craco), React Router 7, Axios; Vercel config is in `frontend/vercel.json`.
-- FastAPI entry point `backend/server.py`, hosted separately (Render blueprint at root `render.yaml`, Python service root `backend`).
-- MongoDB Motor with tenant-per-database routing in `backend/db.py`; shared platform DB is separate.
-- JWT HS256, cookie + Bearer-token support, current-user resolution and tenant context binding in `backend/auth_lib.py`.
-- Tenant roles: `super_admin`, `office_admin`, `user`, `staff`; platform scope is separately identified.
-- Student visibility is explicitly different by role in `backend/routers/students.py`; leads are super-admin-wide, office-admin office-scoped, and staff assignment-scoped in `backend/routers/leads.py`.
-- College `sc_rates` are confidential and stripped for non-super-admins in `backend/routers/colleges.py`.
+The private key and OpenAI key must be kept in the hosting secret manager. The public key may be configured on Mithu. Generate a fresh key pair for this integration; never reuse the EduConnect JWT secret.
 
-## Limitations until the integration branch is reviewed
-The service does not become connected to live EduConnect records merely by deployment. The companion branch must implement the identity-assertion issuer and read-only internal gateway first. This service currently has no write tools or direct DB access.
+## Important: EduConnect read-only gateway
+The existing application still needs its dedicated internal AI gateway endpoints. Until those are implemented and reviewed, keep `EDUCONNECT_API_ENABLED=false`. Voice chat works for general education guidance, but live student, lead and college lookups will not be available.
 
-## Deploy
-Use a separate Docker/container service. Bind to host-provided `PORT` or 8100. Store secrets only in the hosting provider. Do not attach the existing EduConnect database.
+## Browser audio
+The client requires HTTPS (or localhost), microphone permission, and a browser with Web Audio and WebSocket support. Audio is streamed as mono PCM16LE at 24 kHz. The frontend holds transcripts only in memory for the active widget; it does not upload or save audio recordings.
 
-Run tests with `pytest -q`.
+## Deployment
+Run this as an independent Docker service. Do not deploy to the EduConnect service or connect it to the EduConnect database. Configure secrets through the hosting provider. Tests should use synthetic user assertions and fake EduConnect gateways only.
+
+Run tests: `pytest -q`.

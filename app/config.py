@@ -12,6 +12,10 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_model: str = "gpt-5-mini"
+    mithu_live_model: str = "gpt-live-1.1"
+    mithu_live_voice: str = "marin"
+    mithu_responses_model: str = "gpt-6-luna"
+    openai_safety_identifier_secret: str = ""
 
     mithu_mongodb_uri: str = ""
     mithu_database_name: str = "educonnect_mithu"
@@ -20,6 +24,7 @@ class Settings(BaseSettings):
     identity_issuer: str = "educonnect-pro"
     identity_audience: str = "mithu-ai"
     identity_public_key_pem: str = ""
+    mithu_proxy_token: str = ""
 
     educonnect_api_enabled: bool = False
     educonnect_internal_api_url: str = ""
