@@ -13,6 +13,7 @@ from app.security import UserContext, require_user_context
 from app.agent import MithuAgent
 from app.language import detect_language
 from app.educonnect import EduConnectUnavailable
+from app.voice import router as voice_router
 
 cfg = get_settings()
 log = logging.getLogger("mithu")
@@ -38,6 +39,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "X-Mithu-Identity"],
 )
 agent = MithuAgent()
+app.include_router(voice_router)
 
 
 @app.get("/health")
@@ -52,7 +54,11 @@ async def health():
 
 @app.get("/api/v1/voice/capabilities", response_model=VoiceCapability)
 async def voice_capabilities():
-    return VoiceCapability()
+    return VoiceCapability(
+        enabled=bool(cfg.openai_api_key and cfg.identity_public_key_pem),
+        mode="live_websocket",
+        note="Mithu Live voice uses a secured server-side WebSocket bridge." if cfg.openai_api_key and cfg.identity_public_key_pem else "Voice is not configured: OpenAI key and identity verification key are required.",
+    )
 
 
 @app.post("/api/v1/chat", response_model=ChatResponse)
