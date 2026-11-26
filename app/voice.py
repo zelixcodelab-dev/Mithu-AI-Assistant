@@ -118,7 +118,36 @@ async def _send_json(socket, event: dict[str, Any]) -> None:
     await socket.send(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
 
 
-async def _run_tool_call(upstream, item: dict, user) -> None:
+def _minimal_voice_result(name: str, result: Any) -> Any:
+    """Keep sensitive nested student/application fields out of spoken model context."""
+    if name == "list_colleges":
+        fields = {"name", "courses", "place"}
+    elif name == "list_students":
+        fields = {"id", "name", "course", "college", "status", "enrollment_date", "created_at", "reference", "referrer_name"}
+    elif name == "list_leads":
+        fields = {"id", "name", "course", "place", "status", "next_follow_up", "assigned_to_name", "is_missed"}
+    elif name == "get_student":
+        fields = {"id", "name", "course", "college", "status", "enrollment_date", "created_at", "reference", "referrer_name"}
+    else:
+        return {"ok": False, "message": "Unknown voice tool."}
+
+    if isinstance(result, list):
+        return [{key: row.get(key) for key in fields if key in row} for row in result if isinstance(row, dict)]
+    if isinstance(result, dict):
+        for collection_key in ("items", "rows", "students", "leads", "colleges"):
+            value = result.get(collection_key)
+            if isinstance(value, list):
+                return {
+                    collection_key: [
+                        {key: row.get(key) for key in fields if key in row}
+                        for row in value if isinstance(row, dict)
+                    ]
+                }
+        return {key: result.get(key) for key in fields if key in result}
+    return {"ok": False, "message": "The voice tool returned an unsupported response."}
+
+
+async def _execute_tool_call(item: dict, user) -> dict[str, Any]:
     call_id = item.get("call_id")
     name = item.get("name")
     raw_args = item.get("arguments") or "{}"
@@ -128,6 +157,7 @@ async def _run_tool_call(upstream, item: dict, user) -> None:
         if not isinstance(args, dict):
             raise ValueError("Tool arguments must be an object")
         result = await tools.dispatch(name, args, user)
+        result = _minimal_voice_result(name, result)
         output = json.dumps(result, ensure_ascii=False, default=str)
     except Exception as exc:
         log.warning("Voice tool failed name=%s user_id=%s error_type=%s", name, user.user_id, type(exc).__name__)
@@ -136,15 +166,14 @@ async def _run_tool_call(upstream, item: dict, user) -> None:
             "message": "The requested EduConnect information is currently unavailable or not permitted for this account.",
         })
 
-    await _send_json(upstream, {
+    return {
         "type": "response.item.create",
         "item": {
             "type": "function_call_output",
             "call_id": call_id,
             "output": output,
         },
-    })
-    await _send_json(upstream, {"type": "response.create"})
+    }
 
 
 async def _forward_to_openai(browser: WebSocket, upstream) -> None:
@@ -170,6 +199,7 @@ async def _forward_to_openai(browser: WebSocket, upstream) -> None:
 
 
 async def _forward_from_openai(browser: WebSocket, upstream, user) -> None:
+    pending_calls: dict[str, list[dict]] = {}
     while True:
         raw = await upstream.recv()
         event = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
@@ -178,10 +208,26 @@ async def _forward_from_openai(browser: WebSocket, upstream, user) -> None:
         # Responses delegation events are handled on the trusted server.
         if event_type == "response.event":
             nested = event.get("event") or {}
-            if nested.get("type") == "response.output_item.done":
+            delegation_id = str(event.get("delegation_id") or "default")
+            nested_type = nested.get("type")
+
+            if nested_type == "response.output_item.done":
                 item = nested.get("item") or {}
                 if item.get("type") == "function_call":
-                    await _run_tool_call(upstream, item, user)
+                    pending_calls.setdefault(delegation_id, []).append(item)
+
+            elif nested_type == "response.completed":
+                calls = pending_calls.pop(delegation_id, [])
+                if calls:
+                    # Submit all sibling tool results before continuing the delegated response.
+                    for item in calls:
+                        output_event = await _execute_tool_call(item, user)
+                        await _send_json(upstream, output_event)
+                    await _send_json(upstream, {"type": "response.create"})
+
+            elif nested_type in {"response.failed", "response.cancelled", "response.incomplete"}:
+                pending_calls.pop(delegation_id, None)
+
             # Do not disclose internal function arguments, results or tool traces.
             continue
 
