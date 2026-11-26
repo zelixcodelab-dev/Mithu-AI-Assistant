@@ -20,5 +20,5 @@ class ChatResponse(BaseModel):
 
 class VoiceCapability(BaseModel):
     enabled: bool = False
-    mode: Literal["future_adapter"] = "future_adapter"
-    note: str = "Voice input and output are not enabled in this release."
+    mode: Literal["live_websocket"] = "live_websocket"
+    note: str = "Voice input and output use the secured Live WebSocket bridge."
