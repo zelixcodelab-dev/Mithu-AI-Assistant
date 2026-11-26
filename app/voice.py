@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 import jwt
@@ -17,6 +18,8 @@ tools = ReadOnlyTools()
 
 VOICE_PROTOCOL = "mithu.voice.v1"
 VOICE_URL = "wss://api.openai.com/v1/live/sessions"
+_USED_TICKETS: dict[str, int] = {}
+_USED_TICKETS_LOCK = asyncio.Lock()
 
 LIVE_TOOLS = [
     {
@@ -132,17 +135,19 @@ def _minimal_voice_result(name: str, result: Any) -> Any:
         return {"ok": False, "message": "Unknown voice tool."}
 
     if isinstance(result, list):
-        return [{key: row.get(key) for key in fields if key in row} for row in result if isinstance(row, dict)]
+        rows = [{key: row.get(key) for key in fields if key in row} for row in result if isinstance(row, dict)]
+        limit = 80 if name == "list_colleges" else 30
+        return {"items": rows[:limit], "truncated": len(rows) > limit}
     if isinstance(result, dict):
         for collection_key in ("items", "rows", "students", "leads", "colleges"):
             value = result.get(collection_key)
             if isinstance(value, list):
-                return {
-                    collection_key: [
-                        {key: row.get(key) for key in fields if key in row}
-                        for row in value if isinstance(row, dict)
-                    ]
-                }
+                rows = [
+                    {key: row.get(key) for key in fields if key in row}
+                    for row in value if isinstance(row, dict)
+                ]
+                limit = 80 if name == "list_colleges" else 30
+                return {collection_key: rows[:limit], "truncated": len(rows) > limit}
         return {key: result.get(key) for key in fields if key in result}
     return {"ok": False, "message": "The voice tool returned an unsupported response."}
 
@@ -255,6 +260,11 @@ async def _forward_from_openai(browser: WebSocket, upstream, user) -> None:
 @router.websocket("/api/v1/voice/ws")
 async def mithu_voice_socket(websocket: WebSocket):
     cfg = get_settings()
+    origin = websocket.headers.get("origin")
+    if origin and origin not in cfg.allowed_origins:
+        await websocket.close(code=4403, reason="Origin is not allowed")
+        return
+
     subprotocols = websocket.scope.get("subprotocols", [])
     assertion = next(
         (p[len("identity."):] for p in subprotocols if p.startswith("identity.")),
@@ -273,6 +283,17 @@ async def mithu_voice_socket(websocket: WebSocket):
     except (jwt.PyJWTError, ValueError):
         await websocket.close(code=4401, reason="Invalid voice identity")
         return
+
+    # Reject replay of the same 90-second ticket on this service process.
+    now = int(time.time())
+    async with _USED_TICKETS_LOCK:
+        for token_id, expiry in list(_USED_TICKETS.items()):
+            if expiry <= now:
+                _USED_TICKETS.pop(token_id, None)
+        if user.token_id in _USED_TICKETS:
+            await websocket.close(code=4401, reason="Voice identity was already used")
+            return
+        _USED_TICKETS[user.token_id] = now + 120
 
     if not cfg.openai_api_key:
         await websocket.close(code=1011, reason="Voice service is not configured")
