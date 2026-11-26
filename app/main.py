@@ -2,9 +2,12 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from uuid import uuid4
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import store
@@ -13,9 +16,11 @@ from app.security import UserContext, require_user_context
 from app.agent import MithuAgent
 from app.language import detect_language
 from app.educonnect import EduConnectUnavailable
+from app.command_center import router as command_center_router
 
 cfg = get_settings()
 log = logging.getLogger("mithu")
+COMMAND_CENTER_DIR = Path(__file__).resolve().parent.parent / "command-center"
 
 
 @asynccontextmanager
@@ -29,15 +34,29 @@ async def lifespan(app: FastAPI):
     await store.close()
 
 
-app = FastAPI(title="Mithu AI", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Mithu AI", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cfg.allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-Mithu-Identity"],
 )
 agent = MithuAgent()
+app.include_router(command_center_router)
+
+
+@app.get("/command-center", include_in_schema=False)
+@app.get("/command-center/", include_in_schema=False)
+async def command_center_index():
+    return FileResponse(COMMAND_CENTER_DIR / "index.html")
+
+
+app.mount(
+    "/command-center",
+    StaticFiles(directory=COMMAND_CENTER_DIR, html=True),
+    name="command-center-assets",
+)
 
 
 @app.get("/health")

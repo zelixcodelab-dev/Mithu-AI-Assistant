@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     educonnect_internal_api_url: str = ""
     educonnect_service_token: str = ""
 
+    # ElevenLabs admin credentials stay on the server. Never expose in frontend config.
+    elevenlabs_api_key: str = ""
+    elevenlabs_agent_id: str = ""
+
     cors_origins: str = "http://localhost:3000"
 
     @property

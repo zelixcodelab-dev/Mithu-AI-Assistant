@@ -4,8 +4,9 @@ WORKDIR /srv/mithu
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY command-center ./command-center
 COPY tests ./tests
-COPY README.md .
+COPY README.md README_COMMAND_CENTER.md ./
 RUN useradd --create-home --uid 10001 mithu && chown -R mithu:mithu /srv/mithu
 USER mithu
 EXPOSE 8100
