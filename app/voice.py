@@ -101,7 +101,7 @@ def _session_configuration(cfg) -> dict[str, Any]:
         "audio": {
             "format": {"type": "audio/pcm", "rate": 24000},
             "input": {
-                "transcription": {"model": "gpt-4o-mini-transcribe"},
+                "transcription": {"model": "gpt-live-transcribe"},
                 "turn_detection": {
                     "type": "server_vad",
                     "create_response": True,
