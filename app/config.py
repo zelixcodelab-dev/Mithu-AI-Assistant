@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5-mini"
     mithu_live_model: str = "gpt-live-1.1"
     mithu_live_voice: str = "marin"
+    mithu_responses_model: str = "gpt-6-luna"
     openai_safety_identifier_secret: str = ""
 
     mithu_mongodb_uri: str = ""
